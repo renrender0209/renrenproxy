@@ -1,14 +1,18 @@
-class RenRenTabs {
+class ProxyUI {
   constructor() {
-    this.prefix = '/service/'; // serverのconfig.prefixと一致させる
+    // サーバの config.prefix と一致させること（例: '/service/'）
+    this.prefix = '/service/';
+
     this.tabs = [];
     this.activeTabId = null;
+
+    this.homeUrl = 'https://bing.com';
 
     this.init();
   }
 
   async init() {
-    // SWは軽量モードなら任意
+    // Service Worker（軽量・壊さない目的）
     if ('serviceWorker' in navigator) {
       try {
         await navigator.serviceWorker.register('/sw.js', { scope: '/' });
@@ -21,64 +25,85 @@ class RenRenTabs {
     this.bindEvents();
 
     // 初期タブ
-    await this.newTab('https://bing.com');
+    await this.newTab(this.homeUrl);
+
+    // ナビボタン状態を定期更新（同一オリジン制約で完全には取れないので控えめ）
+    this.updateNavButtons();
+    setInterval(() => this.updateNavButtons(), 800);
   }
 
   cacheDom() {
-    this.urlInput = document.getElementById('url-input');
-    this.form = document.getElementById('proxy-form');
     this.tabsBar = document.getElementById('tabs-bar');
     this.view = document.getElementById('tabs-view');
-    this.newTabBtn = document.getElementById('new-tab');
+
+    this.form = document.getElementById('proxy-form');
+    this.urlInput = document.getElementById('url-input');
+
+    this.btnBack = document.getElementById('btn-back');
+    this.btnForward = document.getElementById('btn-forward');
+    this.btnReload = document.getElementById('btn-reload');
+    this.btnHome = document.getElementById('btn-home');
+    this.btnNewTab = document.getElementById('btn-newtab');
   }
 
   bindEvents() {
+    // URLバー Enter / Go
     this.form.addEventListener('submit', (e) => {
       e.preventDefault();
       this.navigateCurrent(this.urlInput.value);
     });
 
-    this.newTabBtn.addEventListener('click', async () => {
-      await this.newTab('https://bing.com');
+    // 新規タブ
+    this.btnNewTab.addEventListener('click', async () => {
+      await this.newTab(this.homeUrl);
     });
 
-    document.querySelectorAll('[data-url]').forEach(a => {
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        const url = a.dataset.url;
-        this.urlInput.value = url;
-        this.navigateCurrent(url);
-      });
+    // ホーム
+    this.btnHome.addEventListener('click', () => {
+      this.navigateCurrent(this.homeUrl);
     });
+
+    // 戻る/進む/更新
+    this.btnReload.addEventListener('click', () => this.reloadActive());
+    this.btnBack.addEventListener('click', () => this.backActive());
+    this.btnForward.addEventListener('click', () => this.forwardActive());
   }
 
   normalize(input) {
     const raw = (input || '').trim();
     if (!raw) return null;
+
     if (/^https?:\/\//i.test(raw)) return raw;
-    if (/^[a-z0-9.-]+\.[a-z]{2,}([\/?#].*)?$/i.test(raw)) return 'https://' + raw;
+
+    // example.com 形式は https:// を付与
+    if (/^[a-z0-9.-]+\.[a-z]{2,}([\/?#].*)?$/i.test(raw)) {
+      return 'https://' + raw;
+    }
+
+    // それ以外は検索（Bing）
     return 'https://www.bing.com/search?q=' + encodeURIComponent(raw);
   }
 
-  b64enc(u) {
+  b64encUtf8(u) {
+    // UTF-8対応のbase64
     return btoa(unescape(encodeURIComponent(u)));
   }
 
   async apiNewTabSession() {
     const r = await fetch('/api/tab/new', { method: 'POST' });
     const j = await r.json();
+    if (!j || !j.tabSessionId) throw new Error('tabSessionId not returned');
     return j.tabSessionId;
   }
 
   buildProxyUrl(sid, targetUrl) {
-    const enc = this.b64enc(targetUrl);
+    const enc = this.b64encUtf8(targetUrl);
     return this.prefix + encodeURIComponent(sid) + '/' + enc;
   }
 
   short(u) {
     try {
-      const x = new URL(u);
-      return x.hostname.replace(/^www\./, '');
+      return new URL(u).hostname.replace(/^www\./, '');
     } catch {
       return (u || 'tab').slice(0, 18);
     }
@@ -93,11 +118,28 @@ class RenRenTabs {
     tab.titleEl.textContent = title;
   }
 
+  activate(tabId) {
+    this.activeTabId = tabId;
+
+    this.tabs.forEach(t => {
+      const active = (t.tabId === tabId);
+      t.tabEl.classList.toggle('active', active);
+      t.iframe.style.display = active ? 'block' : 'none';
+    });
+
+    const t = this.activeTab;
+    if (t?.url) this.urlInput.value = t.url;
+
+    this.updateNavButtons();
+  }
+
   async newTab(initialUrl) {
     const sid = await this.apiNewTabSession();
-    const tabId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
 
-    // ===== tab button (Chrome-like) =====
+    const tabId =
+      (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+
+    // タブ要素
     const tabEl = document.createElement('div');
     tabEl.className = 'tab';
     tabEl.dataset.tabId = tabId;
@@ -114,13 +156,12 @@ class RenRenTabs {
     tabEl.appendChild(closeEl);
     this.tabsBar.appendChild(tabEl);
 
-    // ===== iframe =====
+    // iframe（タブ表示領域）
     const iframe = document.createElement('iframe');
     iframe.className = 'tab-frame';
     iframe.setAttribute('referrerpolicy', 'no-referrer');
 
-    // Chromeっぽくするならsandboxは緩めすぎない方が良いが、
-    // プロキシは動作優先で最低限許可（必要に応じて調整）
+    // 動作優先で緩め（必要なら後で調整）
     iframe.setAttribute(
       'sandbox',
       'allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-presentation'
@@ -128,7 +169,7 @@ class RenRenTabs {
 
     this.view.appendChild(iframe);
 
-    const tab = { tabId, sid, tabEl, titleEl, closeEl, iframe, title: 'new tab', url: '' };
+    const tab = { tabId, sid, tabEl, titleEl, closeEl, iframe, url: '' };
     this.tabs.push(tab);
 
     tabEl.addEventListener('click', (e) => {
@@ -142,24 +183,13 @@ class RenRenTabs {
     });
 
     iframe.addEventListener('load', () => {
-      // 同一オリジン制約でtitle取得は難しいので、URLのhostで更新
+      // 同一オリジン制約で title を取りにくいので、URLから表示
       if (tab.url) this.setTabTitle(tab, this.short(tab.url));
+      this.updateNavButtons();
     });
 
     this.activate(tabId);
     this.navigateCurrent(initialUrl);
-  }
-
-  activate(tabId) {
-    this.activeTabId = tabId;
-    this.tabs.forEach(t => {
-      const active = (t.tabId === tabId);
-      t.tabEl.classList.toggle('active', active);
-      t.iframe.style.display = active ? 'block' : 'none';
-    });
-
-    const t = this.activeTab;
-    if (t?.url) this.urlInput.value = t.url;
   }
 
   navigateCurrent(input) {
@@ -183,28 +213,76 @@ class RenRenTabs {
     if (idx === -1) return;
 
     const t = this.tabs[idx];
+
+    // DOM削除
     t.tabEl.remove();
     t.iframe.remove();
 
-    // サーバ側セッション削除（タブ分離の要）
+    // サーバ側タブセッション削除（任意）
     try {
       await fetch('/api/tab/' + encodeURIComponent(t.sid), { method: 'DELETE' });
-    } catch {}
+    } catch (e) {
+      // 失敗してもUIは閉じる
+    }
 
     this.tabs.splice(idx, 1);
 
+    // タブが0なら新規作成
     if (this.tabs.length === 0) {
-      await this.newTab('https://bing.com');
+      await this.newTab(this.homeUrl);
       return;
     }
 
+    // アクティブを閉じたなら隣へ
     if (this.activeTabId === tabId) {
       const next = this.tabs[Math.max(0, idx - 1)];
       this.activate(next.tabId);
     }
   }
+
+  // ===== nav controls =====
+
+  getActiveFrameWindow() {
+    const t = this.activeTab;
+    if (!t) return null;
+    try { return t.iframe.contentWindow; } catch { return null; }
+  }
+
+  updateNavButtons() {
+    const w = this.getActiveFrameWindow();
+
+    let canBack = false;
+    let canForward = false;
+
+    try {
+      // history.lengthは取れることが多いが完全ではない
+      canBack = !!w && w.history && w.history.length > 1;
+      // forwardは正確に判定しにくいのでオフ寄り（必要なら常にONにもできる）
+      canForward = false;
+    } catch {}
+
+    this.btnBack.disabled = !canBack;
+    this.btnForward.disabled = !canForward;
+  }
+
+  backActive() {
+    const w = this.getActiveFrameWindow();
+    try { w?.history.back(); } catch {}
+  }
+
+  forwardActive() {
+    const w = this.getActiveFrameWindow();
+    try { w?.history.forward(); } catch {}
+  }
+
+  reloadActive() {
+    const t = this.activeTab;
+    if (!t) return;
+    const cur = t.iframe.src;
+    t.iframe.src = cur;
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  window.renrenTabs = new RenRenTabs();
+  window.proxyUI = new ProxyUI();
 });
