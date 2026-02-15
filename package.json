@@ -32,3 +32,10 @@
     "node": ">=18.0.0"
   }
 }
+{
+  "dependencies": {
+    "raw-body": "^3.0.0",
+    "set-cookie-parser": "^2.7.1",
+    "cookie": "^1.0.2"
+  }
+}
