@@ -1,110 +1,182 @@
-// RenRen Proxy クライアントスクリプト
-
-class RenRenClient {
+class RenRenTabs {
   constructor() {
-    this.version = '1.0.0';
-    this.prefix = window.__RENREN_PREFIX__ || '/service/';
-    this.swRegistration = null;
-    this.sessionId = null;
+    this.prefix = '/service/'; // サーバの config.prefix と一致させる
+    this.tabs = [];
+    this.activeTabId = null;
 
     this.init();
   }
 
   async init() {
-    console.log('%cRenRen Proxy Client v' + this.version, 'color:#c084fc; font-size: 18px; font-weight: 700;');
-
-    // Service Worker 登録
+    // SW登録（オプション）
     if ('serviceWorker' in navigator) {
       try {
-        this.swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-        console.log('✓ Service Worker registered');
-      } catch (error) {
-        console.error('Service Worker registration failed:', error);
+        await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      } catch (e) {
+        console.warn('SW register failed:', e);
       }
     }
 
-    // セッション作成
-    await this.createSession();
+    this.cacheDom();
+    this.bindEvents();
 
-    // UIイベント
-    this.setupEventListeners();
+    // 初期タブ
+    await this.newTab('https://bing.com');
   }
 
-  async createSession() {
-    try {
-      const response = await fetch('/api/session/new', { method: 'POST' });
-      const data = await response.json();
-      this.sessionId = data.sessionId;
-      console.log('✓ Session created:', this.sessionId);
-      localStorage.setItem('renren_session', this.sessionId);
-    } catch (error) {
-      console.error('Failed to create session:', error);
-    }
+  cacheDom() {
+    this.urlInput = document.getElementById('url-input');
+    this.form = document.getElementById('proxy-form');
+    this.tabsBar = document.getElementById('tabs-bar');
+    this.view = document.getElementById('tabs-view');
+    this.newTabBtn = document.getElementById('new-tab');
   }
 
-  setupEventListeners() {
-    const form = document.getElementById('proxy-form');
-    const input = document.getElementById('url-input');
+  bindEvents() {
+    this.form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      this.navigateCurrent(this.urlInput.value);
+    });
 
-    if (form && input) {
-      form.addEventListener('submit', (e) => {
+    this.newTabBtn.addEventListener('click', async () => {
+      await this.newTab('https://bing.com');
+    });
+
+    document.querySelectorAll('[data-url]').forEach(a => {
+      a.addEventListener('click', (e) => {
         e.preventDefault();
-        this.go(input.value);
+        const url = a.dataset.url;
+        this.urlInput.value = url;
+        this.navigateCurrent(url);
       });
-    }
-
-    // もし将来 go-btn を付けても動くように
-    const goBtn = document.getElementById('go-btn');
-    if (goBtn && input) {
-      goBtn.addEventListener('click', () => this.go(input.value));
-    }
+    });
   }
 
   normalize(input) {
     const raw = (input || '').trim();
     if (!raw) return null;
-
-    // 検索ワード対応（雑実装）：スペースが入ってたりドットが無い場合は検索に回す、など
-    // まずはURL優先で最低限
     if (/^https?:\/\//i.test(raw)) return raw;
-
-    // example.com 形式を https:// に
-    if (/^[a-z0-9.-]+\.[a-z]{2,}([\/?#].*)?$/i.test(raw)) {
-      return 'https://' + raw;
-    }
-
-    // それ以外は Bing 検索へ（好みで変えてOK）
+    if (/^[a-z0-9.-]+\.[a-z]{2,}([\/?#].*)?$/i.test(raw)) return 'https://' + raw;
     return 'https://www.bing.com/search?q=' + encodeURIComponent(raw);
   }
 
-  base64EncodeUtf8(str) {
-    // btoa はUTF-8を直接扱えないので安全に
-    return btoa(unescape(encodeURIComponent(str)));
+  b64enc(u) {
+    return btoa(unescape(encodeURIComponent(u)));
   }
 
-  go(input) {
+  async apiNewTabSession() {
+    const r = await fetch('/api/tab/new', { method: 'POST' });
+    const j = await r.json();
+    return j.tabSessionId;
+  }
+
+  buildProxyUrl(sid, targetUrl) {
+    const enc = this.b64enc(targetUrl);
+    return this.prefix + encodeURIComponent(sid) + '/' + enc;
+  }
+
+  async newTab(initialUrl) {
+    const sid = await this.apiNewTabSession();
+    const tabId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+
+    // UI要素
+    const tabEl = document.createElement('button');
+    tabEl.className = 'tab';
+    tabEl.textContent = 'new';
+    tabEl.dataset.tabId = tabId;
+
+    const closeEl = document.createElement('span');
+    closeEl.className = 'tab-close';
+    closeEl.textContent = '×';
+    tabEl.appendChild(closeEl);
+
+    this.tabsBar.appendChild(tabEl);
+
+    const iframe = document.createElement('iframe');
+    iframe.className = 'tab-frame';
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-presentation');
+    this.view.appendChild(iframe);
+
+    const tab = { tabId, sid, tabEl, iframe, title: 'new', url: '' };
+    this.tabs.push(tab);
+
+    tabEl.addEventListener('click', (e) => {
+      if (e.target === closeEl) return;
+      this.activate(tabId);
+    });
+
+    closeEl.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await this.closeTab(tabId);
+    });
+
+    iframe.addEventListener('load', () => {
+      // タイトルは同一オリジン制約で取れないことが多いので、URLで代用
+      tabEl.firstChild && (tabEl.firstChild.textContent = tab.url ? this.short(tab.url) : 'tab');
+    });
+
+    this.activate(tabId);
+    this.navigateCurrent(initialUrl);
+  }
+
+  short(u) {
+    try { return new URL(u).hostname; } catch { return (u || 'tab').slice(0, 20); }
+  }
+
+  get activeTab() {
+    return this.tabs.find(t => t.tabId === this.activeTabId);
+  }
+
+  activate(tabId) {
+    this.activeTabId = tabId;
+    this.tabs.forEach(t => {
+      t.tabEl.classList.toggle('active', t.tabId === tabId);
+      t.iframe.style.display = (t.tabId === tabId) ? 'block' : 'none';
+    });
+  }
+
+  navigateCurrent(input) {
     const url = this.normalize(input);
     if (!url) return;
 
-    try {
-      const encoded = this.base64EncodeUtf8(url);
-      const proxyUrl = this.prefix + encoded;
+    const t = this.activeTab;
+    if (!t) return;
 
-      console.log('Target:', url);
-      console.log('Proxy :', proxyUrl);
+    t.url = url;
+    this.urlInput.value = url;
 
-      window.location.href = proxyUrl;
-    } catch (e) {
-      console.error('Navigation error:', e);
-      alert('URLが不正かも');
+    const proxyUrl = this.buildProxyUrl(t.sid, url);
+    t.iframe.src = proxyUrl;
+
+    // タブ名更新
+    t.tabEl.childNodes[0].textContent = this.short(url);
+  }
+
+  async closeTab(tabId) {
+    const idx = this.tabs.findIndex(t => t.tabId === tabId);
+    if (idx === -1) return;
+
+    const t = this.tabs[idx];
+    t.tabEl.remove();
+    t.iframe.remove();
+
+    // サーバ側セッション削除
+    try { await fetch('/api/tab/' + encodeURIComponent(t.sid), { method: 'DELETE' }); } catch {}
+
+    this.tabs.splice(idx, 1);
+
+    if (this.tabs.length === 0) {
+      await this.newTab('https://bing.com');
+      return;
+    }
+
+    if (this.activeTabId === tabId) {
+      this.activate(this.tabs[Math.max(0, idx - 1)].tabId);
     }
   }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    window.renrenClient = new RenRenClient();
-  });
-} else {
-  window.renrenClient = new RenRenClient();
-}
+window.addEventListener('DOMContentLoaded', () => {
+  window.renrenTabs = new RenRenTabs();
+});
