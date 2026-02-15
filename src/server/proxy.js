@@ -1,7 +1,89 @@
 import fetch from 'node-fetch';
 import { URL } from 'url';
+import setCookie from 'set-cookie-parser';
+import cookie from 'cookie';
 import { HTMLRewriter } from './rewriter.js';
 import config from '../config.js';
+
+class CookieJar {
+  constructor() {
+    // key: name|domain|path  => cookie object
+    this.store = new Map();
+  }
+
+  _key(c) {
+    return `${c.name}|${c.domain}|${c.path}`;
+  }
+
+  setFromSetCookieHeader(setCookieHeaders, requestUrl) {
+    const url = new URL(requestUrl);
+    const parsed = setCookie.parse(setCookieHeaders, { map: false });
+
+    for (const c of parsed) {
+      if (!c.name) continue;
+
+      // domain normalize
+      let domain = c.domain ? c.domain.toLowerCase() : url.hostname.toLowerCase();
+      if (domain.startsWith('.')) domain = domain.slice(1);
+
+      const path = c.path || '/';
+
+      // expires handling
+      let expiresAt = null;
+      if (c.expires) {
+        const t = new Date(c.expires).getTime();
+        if (!Number.isNaN(t)) expiresAt = t;
+      } else if (typeof c.maxAge === 'number') {
+        expiresAt = Date.now() + c.maxAge * 1000;
+      }
+
+      // deletion
+      if (c.value === '' || c.maxAge === 0) {
+        this.store.delete(this._key({ name: c.name, domain, path }));
+        continue;
+      }
+
+      const obj = {
+        name: c.name,
+        value: c.value ?? '',
+        domain,
+        path,
+        secure: !!c.secure,
+        httpOnly: !!c.httpOnly,
+        sameSite: c.sameSite || null,
+        expiresAt
+      };
+      this.store.set(this._key(obj), obj);
+    }
+  }
+
+  getCookieHeader(targetUrl) {
+    const url = new URL(targetUrl);
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname || '/';
+    const isHttps = url.protocol === 'https:';
+    const now = Date.now();
+
+    const out = [];
+
+    for (const c of this.store.values()) {
+      // expiry
+      if (c.expiresAt && c.expiresAt <= now) continue;
+
+      // domain match
+      if (c.domain === host || host.endsWith('.' + c.domain)) {
+        // path match
+        if (path.startsWith(c.path)) {
+          // secure
+          if (c.secure && !isHttps) continue;
+          out.push(`${c.name}=${c.value}`);
+        }
+      }
+    }
+
+    return out.join('; ');
+  }
+}
 
 export class ProxyHandler {
   constructor(sessionManager) {
@@ -9,8 +91,6 @@ export class ProxyHandler {
     this.rewriter = new HTMLRewriter();
   }
 
-  // req.baseUrl: "/service/<sid>"（expressの mount 仕様）
-  // req.path: "/<encoded...>"
   async handle(req, res) {
     try {
       const sid = this.extractSid(req);
@@ -19,26 +99,29 @@ export class ProxyHandler {
       const session = this.sessionManager.getSession(sid);
       if (!session) return res.status(404).json({ error: 'tab session not found' });
 
-      const encodedPart = (req.path || '/').slice(1); // remove leading '/'
+      if (!session.cookieJar) {
+        session.cookieJar = new CookieJar();
+        this.sessionManager.updateSession(session.id, { cookieJar: session.cookieJar });
+      }
+
+      const encodedPart = (req.path || '/').slice(1);
       const targetUrl = this.decodeUrl(encodedPart);
 
       if (!targetUrl || !this.isValidUrl(targetUrl)) {
         return res.status(400).json({ error: 'invalid url' });
       }
-
       if (this.isBlocked(targetUrl)) {
         return res.status(403).json({ error: 'blocked' });
       }
 
       const upstreamRes = await this.fetchWithSession(targetUrl, req, session);
 
-      // ★リダイレクト書き換え（タブsid維持）
+      // redirect rewrite (keep sid)
       if ([301, 302, 303, 307, 308].includes(upstreamRes.status)) {
         const loc = upstreamRes.headers.get('location');
         if (loc) {
           let abs;
           try { abs = new URL(loc, targetUrl).href; } catch { abs = loc; }
-
           const encoded = this.encodeUrl(abs);
           res.status(upstreamRes.status);
           res.setHeader('location', this.buildProxyUrl(sid, encoded));
@@ -54,12 +137,10 @@ export class ProxyHandler {
   }
 
   extractSid(req) {
-    // baseUrl: "/service/<sid>" or "/service/<sid>/..."
     const base = req.baseUrl || '';
     const prefix = (config.prefix || '/service/').replace(/\/+$/, '');
     if (!base.startsWith(prefix)) return null;
-    const sid = base.slice(prefix.length).replace(/^\/+/, '');
-    return sid || null;
+    return base.slice(prefix.length).replace(/^\/+/, '') || null;
   }
 
   buildProxyUrl(sid, encoded) {
@@ -68,7 +149,7 @@ export class ProxyHandler {
   }
 
   async fetchWithSession(url, req, session) {
-    const headers = this.buildHeaders(req, session);
+    const headers = this.buildHeaders(req, session, url);
 
     const options = {
       method: req.method,
@@ -76,36 +157,45 @@ export class ProxyHandler {
       redirect: 'manual',
     };
 
-    // NOTE: ここは本格化するなら raw-body で完全に流すべき
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
+      // ★raw-bodyがあればそのまま投げる（これがフォーム/ログイン対応の核）
+      if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
+        options.body = req.rawBody;
+      } else if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
         options.body = req.body;
-      } else if (req.body && Object.keys(req.body).length) {
-        options.body = JSON.stringify(req.body);
-        options.headers['content-type'] = options.headers['content-type'] || 'application/json';
       }
+      // content-type は元のを優先（buildHeadersでコピー済み）
     }
 
     return await fetch(url, options);
   }
 
-  buildHeaders(req, session) {
-    const headers = {
-      'User-Agent': req.headers['user-agent'] ||
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': req.headers['accept'] || '*/*',
-      'Accept-Language': req.headers['accept-language'] || 'ja,en-US;q=0.9,en;q=0.8',
-      'Referer': req.headers['referer'] || undefined,
-      // Hostヘッダ等は node-fetch が処理するので基本入れない
-    };
+  buildHeaders(req, session, targetUrl) {
+    const headers = {};
 
-    // ★タブごとのCookie
-    if (session?.cookies) {
-      const cookieStr = Object.entries(session.cookies)
-        .map(([k, v]) => `${k}=${v}`)
-        .join('; ');
-      if (cookieStr) headers['Cookie'] = cookieStr;
+    // pass-through
+    const pass = [
+      'accept',
+      'accept-language',
+      'content-type',
+      'origin',
+      'referer',
+      'user-agent'
+    ];
+    for (const h of pass) {
+      if (req.headers[h]) headers[h] = req.headers[h];
     }
+
+    // Some sites dislike br from node-fetch; keep simple
+    headers['accept-encoding'] = 'gzip, deflate';
+
+    // Cookie from jar (tab separated)
+    const jarCookie = session.cookieJar?.getCookieHeader(targetUrl);
+    if (jarCookie) headers['cookie'] = jarCookie;
+
+    // Remove hop-by-hop
+    delete headers['connection'];
+    delete headers['host'];
 
     return headers;
   }
@@ -113,32 +203,37 @@ export class ProxyHandler {
   async processResponse(upRes, res, targetUrl, session, sid) {
     const contentType = upRes.headers.get('content-type') || '';
 
-    // ★Set-Cookie保存（タブごと）
-    const setCookie = upRes.headers.raw?.()['set-cookie'] || upRes.headers.get('set-cookie');
-    if (setCookie && session) {
-      this.saveCookies(setCookie, session);
+    // Set-Cookie -> CookieJar
+    const raw = upRes.headers.raw?.();
+    const setCookies = raw?.['set-cookie'];
+    if (setCookies && setCookies.length) {
+      session.cookieJar.setFromSetCookieHeader(setCookies, targetUrl);
     }
 
     res.status(upRes.status);
 
-    // ヘッダコピー（危険なもの除外）
     for (const [key, value] of upRes.headers.entries()) {
       const lower = key.toLowerCase();
-      if (['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(lower)) continue;
 
-      // ★CSP等で注入が死ぬことが多いので緩和（高性能志向）
+      // hop-by-hop
+      if (['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'upgrade'].includes(lower)) {
+        continue;
+      }
+
+      // stability-first: strip policies that break injection / iframe
       if (lower === 'content-security-policy') continue;
       if (lower === 'content-security-policy-report-only') continue;
-
-      // ★クロス分離系で壊れる場合が多い
       if (lower === 'cross-origin-embedder-policy') continue;
       if (lower === 'cross-origin-opener-policy') continue;
       if (lower === 'cross-origin-resource-policy') continue;
 
+      // don't forward set-cookie as-is (we manage jar)
+      if (lower === 'set-cookie') continue;
+
       res.setHeader(key, value);
     }
 
-    // ★HTML/CSS/JS書き換え（sidを渡してURL生成に反映）
+    // rewrite
     if (contentType.includes('text/html')) {
       const html = await upRes.text();
       const rewritten = this.rewriter.rewriteHtml(html, targetUrl, sid);
@@ -160,38 +255,18 @@ export class ProxyHandler {
       return;
     }
 
-    // バイナリはそのまま
-    const buffer = await upRes.arrayBuffer();
-    res.send(Buffer.from(buffer));
-  }
-
-  saveCookies(setCookieHeader, session) {
-    const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-
-    cookies.forEach(cookieStr => {
-      const [nameValue] = cookieStr.split(';');
-      const idx = nameValue.indexOf('=');
-      if (idx === -1) return;
-      const name = nameValue.slice(0, idx).trim();
-      const value = nameValue.slice(idx + 1).trim();
-      if (name) session.cookies[name] = value;
-    });
-
-    this.sessionManager.updateSession(session.id, { cookies: session.cookies });
+    // binary
+    const buf = await upRes.arrayBuffer();
+    res.send(Buffer.from(buf));
   }
 
   decodeUrl(encoded) {
     if (!config.codec?.encode) return encoded;
-
     try {
-      switch (config.codec.encryption) {
-        case 'base64':
-          return Buffer.from(encoded, 'base64').toString('utf-8');
-        case 'xor':
-          return this.xorDecode(encoded, config.codec.salt);
-        default:
-          return encoded;
+      if (config.codec.encryption === 'base64') {
+        return Buffer.from(encoded, 'base64').toString('utf-8');
       }
+      return encoded;
     } catch {
       return null;
     }
@@ -199,36 +274,14 @@ export class ProxyHandler {
 
   encodeUrl(url) {
     if (!config.codec?.encode) return url;
-
     try {
-      switch (config.codec.encryption) {
-        case 'base64':
-          return Buffer.from(url, 'utf-8').toString('base64');
-        case 'xor':
-          return this.xorEncode(url, config.codec.salt);
-        default:
-          return url;
+      if (config.codec.encryption === 'base64') {
+        return Buffer.from(url, 'utf-8').toString('base64');
       }
+      return url;
     } catch {
       return url;
     }
-  }
-
-  xorEncode(str, key) {
-    let result = '';
-    for (let i = 0; i < str.length; i++) {
-      result += String.fromCharCode(str.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-    }
-    return Buffer.from(result, 'binary').toString('base64');
-  }
-
-  xorDecode(str, key) {
-    const binary = Buffer.from(str, 'base64').toString('binary');
-    let result = '';
-    for (let i = 0; i < binary.length; i++) {
-      result += String.fromCharCode(binary.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-    }
-    return result;
   }
 
   isValidUrl(urlString) {
