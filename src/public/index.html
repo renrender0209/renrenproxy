@@ -1,211 +1,289 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>れんれんぷろきしー</title>
+
   <style>
-    body {
+    :root{
+      --bg-overlay: rgba(0,0,0,0.55);
+      --panel: rgba(15,15,18,0.82);
+      --line: rgba(255,255,255,0.10);
+
+      --tab: rgba(255,255,255,0.06);
+      --tab-hover: rgba(255,255,255,0.10);
+      --tab-active: rgba(22,22,28,0.96);
+
+      --btn: rgba(255,255,255,0.08);
+      --btn-hover: rgba(255,255,255,0.12);
+
+      --accent: rgba(168, 85, 247, 0.92);
+      --accent2: rgba(192, 132, 252, 1);
+
+      --text: #fff;
+      --muted: rgba(255,255,255,0.72);
+    }
+
+    *{ box-sizing: border-box; }
+    html, body{ height: 100%; }
+    body{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #000;
-      color: #fff;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
+      color: var(--text);
+      overflow: hidden;
+
+      /* 背景GIF（元のまま） */
       background-image: url('/0A3B8007-6CAD-439E-861F-E81DE8EF7E86.gif');
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
       background-attachment: fixed;
     }
-
-    body::before {
-      content: '';
+    body::before{
+      content:'';
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.55);
+      background: var(--bg-overlay);
+      z-index: 0;
+    }
+
+    .app{
+      position: relative;
       z-index: 1;
-    }
-
-    .container {
-      position: relative;
-      z-index: 2;
-      flex: 1;
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 120px 20px 80px;
-      text-align: center;
-    }
-
-    h1 {
-      font-size: 4.2rem;
-      font-weight: 800;
-      margin: 0 0 1rem;
-      letter-spacing: -1px;
-      text-shadow: 0 6px 16px rgba(0,0,0,0.9);
-    }
-
-    .tagline {
-      font-size: 1.7rem;
-      color: #e0e0e0;
-      margin-bottom: 5rem;
-      text-shadow: 0 3px 10px rgba(0,0,0,0.8);
-    }
-
-    form {
-      max-width: 720px;
-      margin: 0 auto 6rem;
-    }
-
-    .search-bar {
+      height: 100%;
       display: flex;
-      background: rgba(255, 255, 255, 0.10);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border-radius: 9999px;
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.15);
-      box-shadow: 0 12px 48px rgba(0,0,0,0.6);
-      transition: all 0.3s ease;
+      flex-direction: column;
+      min-height: 0;
     }
 
-    .search-bar:focus-within {
-      box-shadow: 0 16px 64px rgba(0,0,0,0.7);
-      transform: translateY(-4px);
+    /* ===== top ===== */
+    .top{
+      padding: 10px 10px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
 
-    input {
-      flex: 1;
-      padding: 1.6rem 2.8rem;
-      font-size: 1.3rem;
-      background: transparent;
-      border: none;
-      outline: none;
-      color: white;
+    .brand{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      user-select: none;
+      padding: 4px 0 2px;
+      text-shadow: 0 6px 16px rgba(0,0,0,0.75);
     }
-
-    input::placeholder {
-      color: rgba(255,255,255,0.60);
+    .brand h1{
+      margin: 0;
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: -0.8px;
     }
-
-    button {
-      padding: 0 4.5rem;
-      background: rgba(168, 85, 247, 0.92); 
-      color: white;
-      border: none;
-      font-size: 1.3rem;
+    .brand p{
+      margin: 0;
+      font-size: 14px;
+      color: rgba(255,255,255,0.85);
       font-weight: 600;
-      cursor: pointer;
-      transition: background 0.3s, transform 0.2s;
     }
 
-    button:hover {
-      background: rgba(192, 132, 252, 1);
-      transform: scale(1.05);
-    }
-
-    button:active {
-      transform: scale(0.98);
-    }
-
-    .quick-section {
-      margin-top: 4rem;
-    }
-
-    .quick-section h2 {
-      font-size: 1.9rem;
-      margin-bottom: 3rem;
-      color: #f0f0f0;
-      text-shadow: 0 3px 12px rgba(0,0,0,0.7);
-    }
-
-    .quick-links {
+    /* ===== tabs (chrome-like) ===== */
+    .tabs{
       display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 3.5rem 5rem;
+      gap: 6px;
+      align-items: flex-end;
+      overflow-x: auto;
+      padding: 0 2px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.18) transparent;
+    }
+    .tabs::-webkit-scrollbar{ height: 8px; }
+    .tabs::-webkit-scrollbar-thumb{ background: rgba(255,255,255,0.18); border-radius: 999px; }
+
+    .tab{
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      max-width: 260px;
+
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,0.10);
+      border-bottom: 0;
+      border-top-left-radius: 12px;
+      border-top-right-radius: 12px;
+
+      background: var(--tab);
+      cursor: pointer;
+      user-select: none;
+      transition: .15s;
+    }
+    .tab:hover{ background: var(--tab-hover); }
+    .tab.active{
+      background: var(--tab-active);
+      border-color: rgba(255,255,255,0.16);
+      z-index: 3;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+    }
+    .tab-title{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1;
+      color: rgba(255,255,255,0.92);
+    }
+    .tab-close{
+      width: 18px;
+      height: 18px;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.10);
+      font-size: 12px;
+      line-height: 1;
+      opacity: 0.9;
+    }
+    .tab-close:hover{ background: rgba(0,0,0,0.35); opacity: 1; }
+
+    .toolbar{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 10px;
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 18px 70px rgba(0,0,0,0.55);
     }
 
-    .quick-links a {
-      color: #d8b4fe; 
-      text-decoration: none;
-      font-size: 1.35rem;
-      font-weight: 500;
-      transition: all 0.3s;
-      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    .btn{
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: var(--btn);
+      color: #fff;
+      cursor: pointer;
+      transition: .15s;
+      display: grid;
+      place-items: center;
+      user-select: none;
+      font-weight: 800;
+    }
+    .btn:hover{ background: var(--btn-hover); transform: translateY(-1px); }
+    .btn:disabled{ opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    .addr{
+      flex: 1;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
     }
 
-    .quick-links a:hover {
-      color: #c084fc;
-      transform: translateY(-5px);
+    #url-input{
+      flex: 1;
+      min-width: 220px;
+      padding: 11px 14px;
+      font-size: 14px;
+      border-radius: 9999px;
+      border: 1px solid rgba(255,255,255,0.14);
+      outline: none;
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      backdrop-filter: blur(14px);
+    }
+    #url-input::placeholder{ color: rgba(255,255,255,0.55); }
+
+    .go{
+      height: 38px;
+      padding: 0 14px;
+      border-radius: 9999px;
+      border: 0;
+      cursor: pointer;
+      font-weight: 900;
+      color: #fff;
+      background: var(--accent);
+      transition: .18s;
+      white-space: nowrap;
+    }
+    .go:hover{ background: var(--accent2); transform: translateY(-1px); }
+
+    /* ===== content ===== */
+    .content{
+      flex: 1;
+      padding: 10px;
+      min-height: 0;
+    }
+    .panel{
+      height: 100%;
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 16px;
+      background: rgba(0,0,0,0.25);
+      box-shadow: 0 22px 90px rgba(0,0,0,0.55);
+      overflow: hidden;
     }
 
-    footer {
-      padding: 3rem 20px;
-      color: #bbb;
-      font-size: 1.1rem;
-      text-align: center;
-      z-index: 2;
+    #tabs-view{
+      width: 100%;
+      height: 100%;
       position: relative;
-      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .tab-frame{
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: none;
+      background: #0e0e12;
+    }
+
+    .footer{
+      position: relative;
+      z-index: 1;
+      padding: 8px 16px 12px;
+      text-align: center;
+      color: rgba(255,255,255,0.72);
+      font-size: 12px;
+      user-select: none;
     }
   </style>
 </head>
+
 <body>
-  <div class="container">
-    <h1>ぷろきし</h1>
-    <p class="tagline">ぷろきしだよ</p>
-
-    <form id="proxy-form">
-      <div class="search-bar">
-        <input
-          type="text"
-          id="url-input"
-          placeholder="URL または 検索ワードを入力"
-          autocomplete="off"
-          autofocus
-        >
-        <button type="submit">行く</button>
+  <div class="app">
+    <div class="top">
+      <div class="brand">
+        <h1>ぷろきし</h1>
+        <p>ぷろきしだよ</p>
       </div>
-    </form>
 
-    <div class="quick-section">
-      <h2>すぐ行けるサイト</h2>
-      <div class="quick-links">
-        <a href="#" data-url="https://bing.com">bing</a>
-        <a href="#" data-url="https://www.youtube.com">YouTube</a>
-        <a href="#" data-url="https://x.com">X</a>
-        <a href="#" data-url="https://discord.com">Discord</a>
-        <a href="#" data-url="https://www.reddit.com">Reddit</a>
-        <a href="#" data-url="https://github.com">GitHub</a>
+      <div id="tabs-bar" class="tabs"></div>
+
+      <div class="toolbar">
+        <button class="btn" id="btn-back" title="戻る">←</button>
+        <button class="btn" id="btn-forward" title="進む">→</button>
+        <button class="btn" id="btn-reload" title="更新">↻</button>
+        <button class="btn" id="btn-home" title="ホーム">⌂</button>
+        <button class="btn" id="btn-newtab" title="新規タブ">＋</button>
+
+        <form id="proxy-form" class="addr">
+          <input id="url-input" type="text" placeholder="URL または 検索ワード" autocomplete="off" />
+          <button class="go" type="submit">Go</button>
+        </form>
       </div>
     </div>
+
+    <div class="content">
+      <div class="panel">
+        <div id="tabs-view"></div>
+      </div>
+    </div>
+
+    <footer class="footer">ねむたいよ</footer>
   </div>
 
-  <footer>
-ねむたいよ
-    </footer>
-
   <script src="/client.js"></script>
-  <script>
-    document.querySelectorAll('.quick-links a').forEach(a => {
-      a.addEventListener('click', e => {
-        e.preventDefault();
-        const url = a.dataset.url;
-        document.getElementById('url-input').value = url;
-        if (window.renrenClient?.go) {
-          window.renrenClient.go(url);
-        } else {
-          document.getElementById('proxy-form').submit();
-        }
-      });
-    });
-  </script>
-  <script>
-  window.__RENREN_PREFIX__ = '/service/';
-</script>
-<script src="/client.js"></script>
-
 </body>
 </html>
