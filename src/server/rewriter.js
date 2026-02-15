@@ -8,7 +8,7 @@ export class HTMLRewriter {
     ];
   }
 
-  rewriteHtml(html, baseUrl) {
+  rewriteHtml(html, baseUrl, sid) {
     try {
       const dom = new JSDOM(html);
       const doc = dom.window.document;
@@ -17,39 +17,38 @@ export class HTMLRewriter {
         doc.querySelectorAll(`[${attr}]`).forEach(el => {
           const val = el.getAttribute(attr);
           if (val && this.shouldRewrite(val)) {
-            el.setAttribute(attr, this.rewriteUrl(val, baseUrl));
+            el.setAttribute(attr, this.rewriteUrl(val, baseUrl, sid));
           }
         });
       });
 
+      // style属性
       doc.querySelectorAll('[style]').forEach(el => {
         const style = el.getAttribute('style');
-        if (style) {
-          el.setAttribute('style', this.rewriteCssUrls(style, baseUrl));
-        }
+        if (style) el.setAttribute('style', this.rewriteCssUrls(style, baseUrl, sid));
       });
 
+      // <style>
       doc.querySelectorAll('style').forEach(style => {
-        if (style.textContent) {
-          style.textContent = this.rewriteCssUrls(style.textContent, baseUrl);
-        }
+        if (style.textContent) style.textContent = this.rewriteCssUrls(style.textContent, baseUrl, sid);
       });
 
+      // inline script（雑だけど入れる）
       doc.querySelectorAll('script:not([src])').forEach(script => {
-        if (script.textContent) {
-          script.textContent = this.rewriteJs(script.textContent, baseUrl);
-        }
+        if (script.textContent) script.textContent = this.rewriteJs(script.textContent, baseUrl, sid);
       });
 
-      if (!doc.querySelector('base')) {
+      // baseタグ（相対解決のため）※ただしプロキシURLにすると挙動が変わるので注意
+      if (!doc.querySelector('base') && doc.head) {
         const base = doc.createElement('base');
-        base.href = this.rewriteUrl(baseUrl, baseUrl);
+        base.href = baseUrl;
         doc.head.insertBefore(base, doc.head.firstChild);
       }
 
+      // 注入ランタイム（fetch/xhr/locationの書き換え）
       const anti = doc.createElement('script');
-      anti.textContent = this.getAntiDetectionScript();
-      doc.head.appendChild(anti);
+      anti.textContent = this.getClientRuntimeScript(sid);
+      doc.head && doc.head.appendChild(anti);
 
       return dom.serialize();
     } catch (err) {
@@ -58,28 +57,24 @@ export class HTMLRewriter {
     }
   }
 
-  rewriteCss(css, baseUrl) {
+  rewriteCss(css, baseUrl, sid) {
     try {
-      return this.rewriteCssUrls(css, baseUrl);
+      return this.rewriteCssUrls(css, baseUrl, sid);
     } catch (err) {
       console.error('css rewrite failed:', err.message);
       return css;
     }
   }
 
-  rewriteCssUrls(css, baseUrl) {
-    return css.replace(
-      /url\(['"]?([^'")]+)['"]?\)/gi,
-      (match, url) => {
-        if (this.shouldRewrite(url)) {
-          return `url('${this.rewriteUrl(url, baseUrl)}')`;
-        }
-        return match;
-      }
-    );
+  rewriteCssUrls(css, baseUrl, sid) {
+    return css.replace(/url\(['"]?([^'")]+)['"]?\)/gi, (match, url) => {
+      if (this.shouldRewrite(url)) return `url('${this.rewriteUrl(url, baseUrl, sid)}')`;
+      return match;
+    });
   }
 
-  rewriteJs(js, baseUrl) {
+  rewriteJs(js) {
+    // “置換で全部直す”のは限界があるが、最低限
     try {
       return js
         .replace(/window\.location/g, '__RenRen__.location')
@@ -92,13 +87,17 @@ export class HTMLRewriter {
     }
   }
 
-  rewriteUrl(url, baseUrl) {
-    if (!url || !this.shouldRewrite(url)) return url;
+  buildPrefix(sid) {
+    const p = (config.prefix || '/service/').replace(/\/+$/, '/');
+    return p + encodeURIComponent(sid) + '/';
+  }
 
+  rewriteUrl(url, baseUrl, sid) {
+    if (!url || !this.shouldRewrite(url)) return url;
     try {
       const abs = new URL(url, baseUrl).href;
       const encoded = this.encodeUrl(abs);
-      return config.prefix + encoded;
+      return this.buildPrefix(sid) + encoded;
     } catch {
       return url;
     }
@@ -112,7 +111,7 @@ export class HTMLRewriter {
         case 'xor':
           return this.xorEncode(url, config.codec.salt);
         case 'base64':
-          return Buffer.from(url).toString('base64');
+          return Buffer.from(url, 'utf-8').toString('base64');
         default:
           return url;
       }
@@ -124,75 +123,77 @@ export class HTMLRewriter {
   xorEncode(str, key) {
     let result = '';
     for (let i = 0; i < str.length; i++) {
-      result += String.fromCharCode(
-        str.charCodeAt(i) ^ key.charCodeAt(i % key.length)
-      );
+      result += String.fromCharCode(str.charCodeAt(i) ^ key.charCodeAt(i % key.length));
     }
     return Buffer.from(result, 'binary').toString('base64');
   }
 
   shouldRewrite(url) {
     if (!url || typeof url !== 'string') return false;
-
     const skip = ['data:', 'blob:', 'javascript:', 'mailto:', 'tel:', '#', 'about:'];
     return !skip.some(p => url.startsWith(p));
   }
 
-  getAntiDetectionScript() {
+  getClientRuntimeScript(sid) {
+    // 重要：ここも encodeUrl の方式と合わせる（base64推奨）
+    const prefix = this.buildPrefix(sid);
+    const codec = config.codec?.encryption || 'base64';
+
     return `
-      (function() {
-        window.__RenRen__ = {
-          version: '1.0',
-          prefix: '${config.prefix}',
+(function () {
+  const SID = ${JSON.stringify(sid)};
+  const PREFIX = ${JSON.stringify(prefix)};
+  const CODEC = ${JSON.stringify(codec)};
 
-          location: new Proxy(window.location, {
-            get(t, p) {
-              if (p === 'href') return window.__RenRen__.getRealUrl(t.href);
-              return t[p];
-            },
-            set(t, p, v) {
-              if (p === 'href') {
-                window.location.href = window.__RenRen__.rewriteUrl(v);
-                return true;
-              }
-              return false;
-            }
-          }),
+  function b64enc(u) {
+    try { return btoa(unescape(encodeURIComponent(u))); } catch { return btoa(u); }
+  }
+  function b64dec(s) {
+    try { return decodeURIComponent(escape(atob(s))); } catch { return atob(s); }
+  }
 
-          fetch: new Proxy(window.fetch, {
-            apply(t, self, args) {
-              args[0] = window.__RenRen__.rewriteUrl(args[0]);
-              return Reflect.apply(t, self, args);
-            }
-          }),
+  // xorはサーバと完全一致が必要（ここではbase64運用推奨）
+  function encodeUrl(u) {
+    if (CODEC === 'base64') return b64enc(u);
+    // fallback
+    return b64enc(u);
+  }
 
-          XMLHttpRequest: class extends XMLHttpRequest {
-            open(m, u, ...a) {
-              return super.open(m, window.__RenRen__.rewriteUrl(u), ...a);
-            }
-          },
+  function rewrite(u) {
+    if (!u || typeof u !== 'string') return u;
+    // すでにプロキシURLならそのまま
+    if (u.startsWith(PREFIX)) return u;
+    try {
+      const abs = new URL(u, window.location.href).href;
+      return PREFIX + encodeUrl(abs);
+    } catch {
+      return u;
+    }
+  }
 
-          rewriteUrl(u) {
-            if (!u || typeof u !== 'string') return u;
-            try {
-              const abs = new URL(u, window.location.origin).href;
-              return '${config.prefix}' + btoa(abs);
-            } catch {
-              return u;
-            }
-          },
+  window.__RenRen__ = {
+    sid: SID,
+    prefix: PREFIX,
+    rewriteUrl: rewrite,
+    fetch: new Proxy(window.fetch, {
+      apply(t, self, args) {
+        args[0] = rewrite(args[0]);
+        return Reflect.apply(t, self, args);
+      }
+    }),
+    XMLHttpRequest: class extends XMLHttpRequest {
+      open(m, u, ...a) { return super.open(m, rewrite(u), ...a); }
+    },
+    location: new Proxy(window.location, {
+      set(t, p, v) {
+        if (p === 'href') { window.location.href = rewrite(v); return true; }
+        return false;
+      }
+    })
+  };
 
-          getRealUrl(pu) {
-            try {
-              const m = pu.match(new RegExp('${config.prefix}' + '([^?#]+)'));
-              if (m) return atob(m[1]);
-            } catch {}
-            return pu;
-          }
-        };
-
-        console.log('%cRenRen Proxy loaded', 'color:#0f0; font-weight:bold');
-      })();
-    `;
+  console.log('%cRenRen Tab Runtime loaded', 'color:#c084fc;font-weight:700');
+})();
+`;
   }
 }
