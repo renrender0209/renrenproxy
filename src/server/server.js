@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import helmet from 'helmet';
 import cors from 'cors';
+import getRawBody from 'raw-body';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -32,10 +33,6 @@ class RenRenProxy {
 
     this.app.use(cors());
     this.app.use(compression());
-
-    // NOTE: バイナリ/フォーム等の完全対応は今後改善余地あり
-    this.app.use(express.json({ limit: '10mb' }));
-    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
     this.app.use(cookieParser());
 
     this.app.use(session({
@@ -53,6 +50,7 @@ class RenRenProxy {
       });
     }
 
+    // static
     this.app.use(express.static(join(__dirname, '../public')));
   }
 
@@ -61,13 +59,12 @@ class RenRenProxy {
       res.json({ status: 'ok', uptime: Math.floor(process.uptime()) });
     });
 
-    // ★タブ用セッションを作る（タブ追加のたびに叩く）
+    // タブ用セッション作成
     this.app.post('/api/tab/new', (req, res) => {
       const tabSessionId = this.sessionManager.createSession();
       res.json({ tabSessionId });
     });
 
-    // 任意：セッション情報（デバッグ用）
     this.app.get('/api/tab/:sid', (req, res) => {
       const s = this.sessionManager.getSession(req.params.sid);
       if (!s) return res.status(404).json({ error: 'session not found' });
@@ -79,7 +76,7 @@ class RenRenProxy {
       res.json({ ok: true });
     });
 
-    // SW / client
+    // client assets
     this.app.get('/sw.js', (req, res) => {
       res.type('application/javascript');
       res.set('Service-Worker-Allowed', '/');
@@ -96,10 +93,31 @@ class RenRenProxy {
       res.sendFile(join(__dirname, '../client/codec.js'));
     });
 
-    // ★タブセッション対応プロキシ:
-    // /service/:sid/<encoded...> を ProxyHandler に渡す
-    const prefix = (config.prefix || '/service/').replace(/\/+$/, '/') ; // 末尾スラッシュ強制
-    this.app.use(prefix + ':sid', this.proxy.handle.bind(this.proxy));
+    // ★プロキシ本体：/service/:sid/<encoded...>
+    // ここだけ raw-body で受ける（JSON/urlencodedを通さない）
+    const prefix = (config.prefix || '/service/').replace(/\/+$/, '/');
+
+    this.app.use(prefix + ':sid', async (req, res, next) => {
+      try {
+        // GET/HEADはbody無し
+        if (req.method === 'GET' || req.method === 'HEAD') return next();
+
+        // raw-body取得（Content-Lengthが無い場合もあるので try）
+        const length = req.headers['content-length']
+          ? parseInt(req.headers['content-length'], 10)
+          : undefined;
+
+        req.rawBody = await getRawBody(req, {
+          length,
+          limit: '25mb'
+        });
+
+        return next();
+      } catch (e) {
+        console.error('raw-body error:', e?.message || e);
+        return res.status(413).send('Payload too large or invalid body');
+      }
+    }, this.proxy.handle.bind(this.proxy));
 
     this.app.use((req, res) => {
       res.status(404).json({ error: 'not found' });
@@ -107,7 +125,6 @@ class RenRenProxy {
   }
 
   start() {
-    // Render等では process.env.PORT が必須級
     const port = process.env.PORT || config.port || 8080;
     const host = config.host || '0.0.0.0';
 
@@ -135,6 +152,7 @@ RenRenProxy 起動
       console.log(`\n${signal} received → shutting down`);
       server.close(() => process.exit(0));
     };
+
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));
   }
