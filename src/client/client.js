@@ -1,6 +1,6 @@
 class RenRenTabs {
   constructor() {
-    this.prefix = '/service/'; // サーバの config.prefix と一致させる
+    this.prefix = '/service/'; // serverのconfig.prefixと一致させる
     this.tabs = [];
     this.activeTabId = null;
 
@@ -8,7 +8,7 @@ class RenRenTabs {
   }
 
   async init() {
-    // SW登録（オプション）
+    // SWは軽量モードなら任意
     if ('serviceWorker' in navigator) {
       try {
         await navigator.serviceWorker.register('/sw.js', { scope: '/' });
@@ -75,30 +75,60 @@ class RenRenTabs {
     return this.prefix + encodeURIComponent(sid) + '/' + enc;
   }
 
+  short(u) {
+    try {
+      const x = new URL(u);
+      return x.hostname.replace(/^www\./, '');
+    } catch {
+      return (u || 'tab').slice(0, 18);
+    }
+  }
+
+  get activeTab() {
+    return this.tabs.find(t => t.tabId === this.activeTabId);
+  }
+
+  setTabTitle(tab, title) {
+    tab.title = title;
+    tab.titleEl.textContent = title;
+  }
+
   async newTab(initialUrl) {
     const sid = await this.apiNewTabSession();
-    const tabId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+    const tabId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
 
-    // UI要素
-    const tabEl = document.createElement('button');
+    // ===== tab button (Chrome-like) =====
+    const tabEl = document.createElement('div');
     tabEl.className = 'tab';
-    tabEl.textContent = 'new';
     tabEl.dataset.tabId = tabId;
+
+    const titleEl = document.createElement('span');
+    titleEl.className = 'tab-title';
+    titleEl.textContent = 'new tab';
 
     const closeEl = document.createElement('span');
     closeEl.className = 'tab-close';
     closeEl.textContent = '×';
-    tabEl.appendChild(closeEl);
 
+    tabEl.appendChild(titleEl);
+    tabEl.appendChild(closeEl);
     this.tabsBar.appendChild(tabEl);
 
+    // ===== iframe =====
     const iframe = document.createElement('iframe');
     iframe.className = 'tab-frame';
     iframe.setAttribute('referrerpolicy', 'no-referrer');
-    iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-presentation');
+
+    // Chromeっぽくするならsandboxは緩めすぎない方が良いが、
+    // プロキシは動作優先で最低限許可（必要に応じて調整）
+    iframe.setAttribute(
+      'sandbox',
+      'allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-presentation'
+    );
+
     this.view.appendChild(iframe);
 
-    const tab = { tabId, sid, tabEl, iframe, title: 'new', url: '' };
+    const tab = { tabId, sid, tabEl, titleEl, closeEl, iframe, title: 'new tab', url: '' };
     this.tabs.push(tab);
 
     tabEl.addEventListener('click', (e) => {
@@ -112,28 +142,24 @@ class RenRenTabs {
     });
 
     iframe.addEventListener('load', () => {
-      // タイトルは同一オリジン制約で取れないことが多いので、URLで代用
-      tabEl.firstChild && (tabEl.firstChild.textContent = tab.url ? this.short(tab.url) : 'tab');
+      // 同一オリジン制約でtitle取得は難しいので、URLのhostで更新
+      if (tab.url) this.setTabTitle(tab, this.short(tab.url));
     });
 
     this.activate(tabId);
     this.navigateCurrent(initialUrl);
   }
 
-  short(u) {
-    try { return new URL(u).hostname; } catch { return (u || 'tab').slice(0, 20); }
-  }
-
-  get activeTab() {
-    return this.tabs.find(t => t.tabId === this.activeTabId);
-  }
-
   activate(tabId) {
     this.activeTabId = tabId;
     this.tabs.forEach(t => {
-      t.tabEl.classList.toggle('active', t.tabId === tabId);
-      t.iframe.style.display = (t.tabId === tabId) ? 'block' : 'none';
+      const active = (t.tabId === tabId);
+      t.tabEl.classList.toggle('active', active);
+      t.iframe.style.display = active ? 'block' : 'none';
     });
+
+    const t = this.activeTab;
+    if (t?.url) this.urlInput.value = t.url;
   }
 
   navigateCurrent(input) {
@@ -149,8 +175,7 @@ class RenRenTabs {
     const proxyUrl = this.buildProxyUrl(t.sid, url);
     t.iframe.src = proxyUrl;
 
-    // タブ名更新
-    t.tabEl.childNodes[0].textContent = this.short(url);
+    this.setTabTitle(t, this.short(url));
   }
 
   async closeTab(tabId) {
@@ -161,8 +186,10 @@ class RenRenTabs {
     t.tabEl.remove();
     t.iframe.remove();
 
-    // サーバ側セッション削除
-    try { await fetch('/api/tab/' + encodeURIComponent(t.sid), { method: 'DELETE' }); } catch {}
+    // サーバ側セッション削除（タブ分離の要）
+    try {
+      await fetch('/api/tab/' + encodeURIComponent(t.sid), { method: 'DELETE' });
+    } catch {}
 
     this.tabs.splice(idx, 1);
 
@@ -172,7 +199,8 @@ class RenRenTabs {
     }
 
     if (this.activeTabId === tabId) {
-      this.activate(this.tabs[Math.max(0, idx - 1)].tabId);
+      const next = this.tabs[Math.max(0, idx - 1)];
+      this.activate(next.tabId);
     }
   }
 }
