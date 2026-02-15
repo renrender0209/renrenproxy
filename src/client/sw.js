@@ -1,20 +1,10 @@
-const PREFIX = '/service/';
-const VERSION = '2.0.0-tabs';
+const VERSION = '3.0.0-stable';
 
-self.addEventListener('install', (event) => {
-  console.log('[SW] install', VERSION);
-  self.skipWaiting();
-});
-
-self.addEventListener('activate', (event) => {
-  console.log('[SW] activate');
-  event.waitUntil(self.clients.claim());
-});
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  if (!url.pathname.startsWith(PREFIX)) return;
-  // 基本はサーバに任せる（requestそのまま）
+  // サーバ側で全部処理する（SWで二重rewriteしない）
   event.respondWith(fetch(event.request));
 });
 
