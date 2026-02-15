@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RenRen Proxy</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>RenRen Proxy</h1>
+      <p>制限かいくぐるやつ</p>
+    </header>
+
+    <main>
+      <form id="proxy-form" class="search-box">
+        <input
+          type="text"
+          id="url-input"
+          placeholder="ここにURL入れて"
+          autocomplete="off"
+          autofocus
+        >
+        <button type="submit">いく</button>
+      </form>
+
+      <div class="features">
+        <div>セッションちゃんと持つ（Cookieとか残る）</div>
+        <div>Service Workerでサクサク動く</div>
+        <div>WebSocketもいける（DiscordとかOK）</div>
+      </div>
+
+      <div class="quick-links">
+        <h2>よく使うやつ</h2>
+        <div class="grid">
+          <a href="#" data-url="https://www.google.com">Google</a>
+          <a href="#" data-url="https://www.youtube.com">YouTube</a>
+          <a href="#" data-url="https://twitter.com">X</a>
+          <a href="#" data-url="https://discord.com">Discord</a>
+          <a href="#" data-url="https://www.reddit.com">Reddit</a>
+          <a href="#" data-url="https://github.com">GitHub</a>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>ねむたいよ</p>
+    </footer>
+  </div>
+
+  <script src="/client.js"></script>
+  <script>
+    document.querySelectorAll('.quick-links a').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const url = a.dataset.url;
+        document.getElementById('url-input').value = url;
+        if (window.renrenClient) {
+          window.renrenClient.go(url);
+        } else {
+          document.getElementById('proxy-form').submit();
+        }
+      });
+    });
+  </script>
+</body>
+</html>
