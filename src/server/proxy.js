@@ -1,6 +1,5 @@
 import fetch from 'node-fetch';
 import { URL } from 'url';
-import mime from 'mime-types';
 import { HTMLRewriter } from './rewriter.js';
 import config from '../config.js';
 
@@ -12,7 +11,7 @@ export class ProxyHandler {
 
   async handle(req, res, next) {
     try {
-      const proxyPath = req.path.slice(1);
+      const proxyPath = req.path.slice(1); // "/service/<encoded>" の "<encoded>"
       const targetUrl = this.decodeUrl(proxyPath);
 
       if (!targetUrl || !this.isValidUrl(targetUrl)) {
@@ -28,10 +27,27 @@ export class ProxyHandler {
 
       const upstreamRes = await this.fetchWithSession(targetUrl, req, session);
 
-      await this.processResponse(upstreamRes, res, targetUrl, session);
+      // ★リダイレクト(Location)を書き換える
+      if ([301, 302, 303, 307, 308].includes(upstreamRes.status)) {
+        const loc = upstreamRes.headers.get('location');
+        if (loc) {
+          let abs;
+          try {
+            abs = new URL(loc, targetUrl).href;
+          } catch {
+            abs = loc;
+          }
 
+          const encoded = this.encodeUrl(abs);
+          res.status(upstreamRes.status);
+          res.setHeader('location', (config.prefix || '/service/') + encoded);
+          return res.end();
+        }
+      }
+
+      await this.processResponse(upstreamRes, res, targetUrl, session);
     } catch (err) {
-      console.error('proxy error:', err.message);
+      console.error('proxy error:', err);
       res.status(500).json({ error: 'proxy error' });
     }
   }
@@ -46,7 +62,14 @@ export class ProxyHandler {
     };
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      options.body = req.body;
+      // express.json() で object になってると fetch が困る場合がある
+      // まずはJSONとして投げる（必要に応じて content-type 見て改良）
+      if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
+        options.body = req.body;
+      } else if (req.body && Object.keys(req.body).length) {
+        options.body = JSON.stringify(req.body);
+        options.headers['content-type'] = options.headers['content-type'] || 'application/json';
+      }
     }
 
     if (session?.proxy) {
@@ -62,7 +85,8 @@ export class ProxyHandler {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Accept': req.headers['accept'] || '*/*',
       'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
+      // node-fetch が自動でやるので基本は不要。入れると壊れることもある
+      // 'Accept-Encoding': 'gzip, deflate, br',
       'Referer': req.headers['referer'] || undefined,
     };
 
@@ -70,9 +94,7 @@ export class ProxyHandler {
       const cookieStr = Object.entries(session.cookies)
         .map(([k, v]) => `${k}=${v}`)
         .join('; ');
-      if (cookieStr) {
-        headers['Cookie'] = cookieStr;
-      }
+      if (cookieStr) headers['Cookie'] = cookieStr;
     }
 
     return headers;
@@ -116,9 +138,8 @@ export class ProxyHandler {
       return;
     }
 
-    // その他（画像・バイナリなど）
-    const buffer = await upRes.buffer();
-    res.send(buffer);
+    const buffer = await upRes.arrayBuffer();
+    res.send(Buffer.from(buffer));
   }
 
   saveCookies(setCookieHeader, session) {
@@ -136,22 +157,47 @@ export class ProxyHandler {
   }
 
   decodeUrl(encoded) {
-    if (!config.codec?.encode) {
-      return encoded;
-    }
+    if (!config.codec?.encode) return encoded;
 
     try {
       switch (config.codec.encryption) {
-        case 'xor':
-          return this.xorDecode(encoded, config.codec.salt);
         case 'base64':
           return Buffer.from(encoded, 'base64').toString('utf-8');
+        case 'xor':
+          return this.xorDecode(encoded, config.codec.salt);
         default:
           return encoded;
       }
     } catch {
       return null;
     }
+  }
+
+  encodeUrl(url) {
+    if (!config.codec?.encode) return url;
+
+    try {
+      switch (config.codec.encryption) {
+        case 'base64':
+          return Buffer.from(url, 'utf-8').toString('base64');
+        case 'xor':
+          return this.xorEncode(url, config.codec.salt);
+        default:
+          return url;
+      }
+    } catch {
+      return url;
+    }
+  }
+
+  xorEncode(str, key) {
+    let result = '';
+    for (let i = 0; i < str.length; i++) {
+      result += String.fromCharCode(
+        str.charCodeAt(i) ^ key.charCodeAt(i % key.length)
+      );
+    }
+    return Buffer.from(result, 'binary').toString('base64');
   }
 
   xorDecode(str, key) {
@@ -167,8 +213,8 @@ export class ProxyHandler {
 
   isValidUrl(urlString) {
     try {
-      const url = new URL(urlString);
-      return url.protocol === 'http:' || url.protocol === 'https:';
+      const u = new URL(urlString);
+      return u.protocol === 'http:' || u.protocol === 'https:';
     } catch {
       return false;
     }
