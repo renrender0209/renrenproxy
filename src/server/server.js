@@ -31,9 +31,9 @@ class RenRenProxy {
     }));
 
     this.app.use(cors());
-
     this.app.use(compression());
 
+    // NOTE: バイナリ/フォーム等の完全対応は今後改善余地あり
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
     this.app.use(cookieParser());
@@ -58,35 +58,28 @@ class RenRenProxy {
 
   setupRoutes() {
     this.app.get('/health', (req, res) => {
-      res.json({
-        status: 'ok',
-        uptime: Math.floor(process.uptime()),
-      });
+      res.json({ status: 'ok', uptime: Math.floor(process.uptime()) });
     });
 
-    this.app.post('/api/session/new', (req, res) => {
-      const sessionId = this.sessionManager.createSession();
-      req.session.proxySessionId = sessionId;
-      res.json({ sessionId });
+    // ★タブ用セッションを作る（タブ追加のたびに叩く）
+    this.app.post('/api/tab/new', (req, res) => {
+      const tabSessionId = this.sessionManager.createSession();
+      res.json({ tabSessionId });
     });
 
-    this.app.get('/api/session/info', (req, res) => {
-      const sid = req.session?.proxySessionId;
-      if (!sid) {
-        return res.status(400).json({ error: 'no active session' });
-      }
-      const info = this.sessionManager.getSession(sid);
-      if (!info) {
-        return res.status(404).json({ error: 'session not found' });
-      }
-      res.json(info);
+    // 任意：セッション情報（デバッグ用）
+    this.app.get('/api/tab/:sid', (req, res) => {
+      const s = this.sessionManager.getSession(req.params.sid);
+      if (!s) return res.status(404).json({ error: 'session not found' });
+      res.json({ id: s.id, created: s.created, lastAccess: s.lastAccess });
     });
 
-    this.app.delete('/api/session/:id', (req, res) => {
-      this.sessionManager.deleteSession(req.params.id);
+    this.app.delete('/api/tab/:sid', (req, res) => {
+      this.sessionManager.deleteSession(req.params.sid);
       res.json({ ok: true });
     });
 
+    // SW / client
     this.app.get('/sw.js', (req, res) => {
       res.type('application/javascript');
       res.set('Service-Worker-Allowed', '/');
@@ -103,7 +96,10 @@ class RenRenProxy {
       res.sendFile(join(__dirname, '../client/codec.js'));
     });
 
-    this.app.use(config.prefix || '/~/', this.proxy.handle.bind(this.proxy));
+    // ★タブセッション対応プロキシ:
+    // /service/:sid/<encoded...> を ProxyHandler に渡す
+    const prefix = (config.prefix || '/service/').replace(/\/+$/, '/') ; // 末尾スラッシュ強制
+    this.app.use(prefix + ':sid', this.proxy.handle.bind(this.proxy));
 
     this.app.use((req, res) => {
       res.status(404).json({ error: 'not found' });
@@ -111,47 +107,37 @@ class RenRenProxy {
   }
 
   start() {
-    const server = this.app.listen(
-      config.port,
-      config.host || '0.0.0.0',
-      () => {
-        const addr = server.address();
-        const host = addr.address === '::' ? 'localhost' : addr.address;
-        const port = addr.port;
+    // Render等では process.env.PORT が必須級
+    const port = process.env.PORT || config.port || 8080;
+    const host = config.host || '0.0.0.0';
 
-        console.log(`
-RenRenProxy が起動しました
+    const server = this.app.listen(port, host, () => {
+      const addr = server.address();
+      const bindHost = addr.address === '::' ? 'localhost' : addr.address;
+      const bindPort = addr.port;
+
+      console.log(`
+RenRenProxy 起動
 ──────────────────────────────
-  http://${host}:${port}
-  prefix → ${config.prefix || '/~/'}
+  http://${bindHost}:${bindPort}
+  prefix → ${config.prefix || '/service/'}
+  tabs  → /service/<tabSessionId>/<encoded>
 ──────────────────────────────
-  • セッション管理
-  • SW経由のリクエスト傍受
-  • URL暗号化
-  • WebSocket対応
-  • HTML/JS/CSS書き換え
-──────────────────────────────
-        `);
-      }
-    );
+      `);
+    });
 
     if (config.websocket?.enabled) {
       new WebSocketHandler(server, this.sessionManager);
-      console.log('WebSocket handler を開始しました');
+      console.log('WebSocket handler started on /ws');
     }
 
     const shutdown = (signal) => {
-      console.log(`\n${signal} 受信 → シャットダウン開始`);
-      server.close(() => {
-        console.log('HTTPサーバーを閉じました');
-        process.exit(0);
-      });
+      console.log(`\n${signal} received → shutting down`);
+      server.close(() => process.exit(0));
     };
-
     process.once('SIGTERM', () => shutdown('SIGTERM'));
-    process.once('SIGINT',  () => shutdown('SIGINT'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
   }
 }
 
-const server = new RenRenProxy();
-server.start();
+new RenRenProxy().start();
