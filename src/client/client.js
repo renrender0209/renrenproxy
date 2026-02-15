@@ -3,28 +3,21 @@
 class RenRenClient {
   constructor() {
     this.version = '1.0.0';
-    this.prefix = '/service/';
+    this.prefix = window.__RENREN_PREFIX__ || '/service/';
     this.swRegistration = null;
     this.sessionId = null;
-    
+
     this.init();
   }
 
   async init() {
-    console.log('%c🎭 RenRen Proxy Client v' + this.version, 'color: #ff6b6b; font-size: 20px; font-weight: bold;');
-    
+    console.log('%cRenRen Proxy Client v' + this.version, 'color:#c084fc; font-size: 18px; font-weight: 700;');
+
     // Service Worker 登録
     if ('serviceWorker' in navigator) {
       try {
-        this.swRegistration = await navigator.serviceWorker.register('/sw.js', {
-          scope: '/'
-        });
+        this.swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
         console.log('✓ Service Worker registered');
-        
-        // 更新チェック
-        this.swRegistration.addEventListener('updatefound', () => {
-          console.log('Service Worker update found');
-        });
       } catch (error) {
         console.error('Service Worker registration failed:', error);
       }
@@ -32,21 +25,17 @@ class RenRenClient {
 
     // セッション作成
     await this.createSession();
-    
-    // UI イベント
+
+    // UIイベント
     this.setupEventListeners();
   }
 
   async createSession() {
     try {
-      const response = await fetch('/api/session/new', {
-        method: 'POST'
-      });
+      const response = await fetch('/api/session/new', { method: 'POST' });
       const data = await response.json();
       this.sessionId = data.sessionId;
       console.log('✓ Session created:', this.sessionId);
-      
-      // sessionIdを保存
       localStorage.setItem('renren_session', this.sessionId);
     } catch (error) {
       console.error('Failed to create session:', error);
@@ -56,69 +45,62 @@ class RenRenClient {
   setupEventListeners() {
     const form = document.getElementById('proxy-form');
     const input = document.getElementById('url-input');
-    const goBtn = document.getElementById('go-btn');
 
-    if (form) {
+    if (form && input) {
       form.addEventListener('submit', (e) => {
         e.preventDefault();
-        this.navigate(input.value);
+        this.go(input.value);
       });
     }
 
-    if (goBtn) {
-      goBtn.addEventListener('click', () => {
-        this.navigate(input.value);
-      });
+    // もし将来 go-btn を付けても動くように
+    const goBtn = document.getElementById('go-btn');
+    if (goBtn && input) {
+      goBtn.addEventListener('click', () => this.go(input.value));
     }
   }
 
-  navigate(url) {
+  normalize(input) {
+    const raw = (input || '').trim();
+    if (!raw) return null;
+
+    // 検索ワード対応（雑実装）：スペースが入ってたりドットが無い場合は検索に回す、など
+    // まずはURL優先で最低限
+    if (/^https?:\/\//i.test(raw)) return raw;
+
+    // example.com 形式を https:// に
+    if (/^[a-z0-9.-]+\.[a-z]{2,}([\/?#].*)?$/i.test(raw)) {
+      return 'https://' + raw;
+    }
+
+    // それ以外は Bing 検索へ（好みで変えてOK）
+    return 'https://www.bing.com/search?q=' + encodeURIComponent(raw);
+  }
+
+  base64EncodeUtf8(str) {
+    // btoa はUTF-8を直接扱えないので安全に
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+
+  go(input) {
+    const url = this.normalize(input);
     if (!url) return;
-    
-    // URLの正規化
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://' + url;
-    }
 
     try {
-      const encoded = this.encodeUrl(url);
+      const encoded = this.base64EncodeUtf8(url);
       const proxyUrl = this.prefix + encoded;
-      
-      console.log('Navigating to:', url);
-      console.log('Proxy URL:', proxyUrl);
-      
+
+      console.log('Target:', url);
+      console.log('Proxy :', proxyUrl);
+
       window.location.href = proxyUrl;
-    } catch (error) {
-      console.error('Navigation error:', error);
-      alert('Invalid URL');
-    }
-  }
-
-  encodeUrl(url) {
-    return btoa(url);
-  }
-
-  decodeUrl(encoded) {
-    try {
-      return atob(encoded);
-    } catch {
-      return null;
-    }
-  }
-
-  // セッション情報取得
-  async getSessionInfo() {
-    try {
-      const response = await fetch('/api/session/info');
-      return await response.json();
-    } catch (error) {
-      console.error('Failed to get session info:', error);
-      return null;
+    } catch (e) {
+      console.error('Navigation error:', e);
+      alert('URLが不正かも');
     }
   }
 }
 
-// クライアント初期化
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     window.renrenClient = new RenRenClient();
